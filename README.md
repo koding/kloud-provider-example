@@ -1,172 +1,215 @@
 kloud-provider-example
 ----------------------
 
-This repository is an example of custom kloud provider.
+This repository is an example of custom Kloud provider plugin.
 
-A usual flow for saving a team's stack from UI looks like:
+Kloud is a backend behind Koding that is responsible for bootstrapping, building and destroying user stacks and managing access to each machine instance within those stacks.
+
+## Requirements
+
+- [go1.6+](https://golang.org/dl/)
+
+## Installation
+
+A new Kloud provider can be added by simply clonning your provider plugin into `kloud/provider` directory and rebuilding Kloud.
+
+```bash
+koding $ git clone git@github.com:kloud/kloud-provider-example go/src/koding/kites/kloud/provider/example
+koding $ ./go/build.sh
+```
+
+## Plugins
+
+A Kloud provider is responsible for composing a single Terraform template from multiple data sources:
+
+- stack template
+- credentials
+- bootstrapped resources
+
+A single Kloud provider validates credentials provided by a user, bootstraps a stack by creating provider-specific, persistant resources and provisions a Klient service for each instance built within a stack. The Klient service is used to connect remote machine to Koding allowing for webterm sessions in the browser, machine-sharing with other Koding users and starting / stopping the machine itself.
+
+# Example plugin
+
+This repository contains a documented example of a Kloud provider plugin - [example.go](./example.go).
+
+The [Koding repository](https://github.com/koding/koding) contains more examples of Kloud providers:
+
+- [AWS](https://github.com/koding/koding/tree/master/go/src/koding/kites/kloud/provider/aws)
+- [Vagrant](https://github.com/koding/koding/tree/master/go/src/koding/kites/kloud/provider/vagrant)
+- [Azure](https://github.com/koding/koding/tree/master/go/src/koding/kites/kloud/provider/azure)
+
+# Quick start
+
+Go services in Koding repository use currently project-based GOPATH, that's why ensure you point your GOPATH to the `go` directory inside Koding repository:
+
+```bash
+~ $ export GOPATH=~/github.com/koding/koding/go
+```
+
+A project structure of your Kloud provider may look like the following:
 
 ```
-create new credentials -> authenticate request -> save template -> bootstrap request
+your/
+├── your.go        <-- registers *provider.Provider
+├── machine.go     <-- defines *Machine struct
+├── schema.go      <-- defines *Credential, *Bootstrap and *Metadata structs
+└── stack.go       <-- defines *Stack struct
 ```
 
-The authenticate and bootstrap request are served by a kloud provider. After the stack is successfully saved, then a user typically initializes a stack and builds it:
+- `example.go` registers provider definition (like [this one](./example.go#L18-L105))
 
-```
-initialize machines -> plan request -> build stack -> apply request
-```
-
-A kloud provider is any type that implements `stack.Provider` interface:
+The content of this file is:
 
 ```go
-// Provider is used to manage architecture for the specific
-// cloud provider and to control particular virtual machines
-// within it.
-//
-// Kloud comes with the following built-in providers:
-//
-//   - aws
-//   - vagrant
-//
-type Provider interface {
-	// Stack returns a provider that implements team methods.
-	//
-	// Team methods are used to manage architecture for
-	// the given cloud-provider - they can bootstrap,
-	// modify or destroy resources, which can be
-	// backed by Terraform-specific provider.
-	//
-	// The default helper *provider.BaseStack uses
-	// Terraform for heavy lifting. Provider-specific
-	// implementations are used to augment the user
-	// stacks (Terraform templates) with default
-	// resources created during bootstrap.
-	Stack(context.Context) (Stack, error)
+package your
 
-	// Machine returns a value that implements the Machine interface.
-	//
-	// The Machine interface is used to control a single vm
-	// for the specific cloud-provider.
-	Machine(ctx context.Context, id string) (Machine, error)
+import (
+	"koding/kites/kloud/stack"
+	"koding/kites/kloud/stack/provider"
+)
 
-	// Cred returns new value for provider-specific credential.
-	// The Cred is called when building credentials
-	// for apply and bootstrap requests, so each provider
-	// has access to type-friendly credential values.
-	//
-	// Examples:
-	//
-	//   - aws.Cred
-	//   - vagrant.Cred
-	//
-	Cred() interface{}
+var p = &provider.Provider{
+	Name:         "your",
+	ResourceName: "instance",
+	
+	// Machine type is defined in machine.go
+	Machine: func(bm *provider.BaseMachine) (provider.Machine, error) {
+		return &Machine{BaseMachine: bm}, nil
+	},
+	
+	// Stack type is defined in stack.go
+	Stack: func(bs *provider.BaseStack) (provider.Stack, error) {
+		return &Stack{BaseStack: bs}, nil
+	},
+	
+	// Schema value is defined in schema.go 
+	Schema: Schema,
 }
-```
 
-Usually a provider composes a `*provider.BaseProvider` helper that implements most of the common functionality that a kloud provider offers. During startup kloud is responsible for creating a `*provider.BaseProvider` value, which is set up for use with database and other services like terraformer, which is a regular Terraform binary served as an API kite.
-
-All built-in and external providers are registered in a global `provider.All` map, in a similar manner that a database driver is registered for use with `database/sql` package. In order to use your kloud provider implementation with kloud, clone its sources into `go/src/koding/kites/kloud/provider` directory within  repo
-
-
-```
-koding $ git clone https://github.com/koding/kloud-provider-example go/src/koding/kites/kloud/provider/example
-```
-
-And ensure your provider is added to `provider.All` map. Usually it is enough to add it within [an init method](example.go#L6):
-
-```go
 func init() {
-	provider.All["example"] = func(bp *provider.BaseProvider) stack.Provider {
-		return &Provider{
-			BaseProvider: bp,
-		}
-	}
+	provider.Register(p)
 }
 ```
 
-When building Koding services with [build.sh](https://github.com/koding/koding/blob/master/go/build.sh), the script will generate empty imports for each sub-package under the `koding/kites/kloud/provider` directory, so it is enough to just clone a repository with your provider and build Koding services - your provider will be automatically bundled.
+- `schema.go` defines models which are used to persist provider data (like [this one](./example.go#L92-L104))
 
-A typical provider is responsible for managing team stack and managing a single machine. In order to manage a stack, custom provider is expected to provide a type that implements a `stack.Stack` interface:
+And its contents:
 
 ```go
-// Stack is a provider-specific handler that implements team methods.
-type Stack interface {
-	// Apply is responsible for building team's stack template and sending it
-	// to Terraformer kite in order to apply requested changes.
-	//
-	// If modifying an infrastructures with Terraform is successful, stack
-	// is expected to update jMachine documents for each instance
-	// within the stack, if neccessary. It may update fields like ipAddress
-	// or queryString.
-	//
-	// If existing resources are requested to be deleted, after they are
-	// successfully destroyed by Terraform the provider is responsible
-	// for removing any data it created for the stack.
-	Apply(context.Context) (interface{}, error)
+package your
 
-	// Authenticate is responsible for veryfying whether user-provided
-	// credentials are valid for the given provider.
-	Authenticate(context.Context) (interface{}, error)
+import "koding/kites/kloud/stack/provider"
 
-	// Bootstrap is responsible for creating resources that are
-	// shared among all stacks created using particular credentials.
-	//
-	// Usually provider creates those resources with internal
-	// Terraform template and updates credential data
-	// with all the necessarry IDs that are required to reference
-	// them during Apply operation.
-	//
-	// If Destroy of the request is set to true, Bootstrap
-	// must attempt to destroy existing resources with Terraform.
-	Bootstrap(context.Context) (interface{}, error)
+var Schema = &provider.Schema{
+	NewCredential: func() interface{} { return &Credential{} },
+	NewBootstrap:  func() interface{} { return &Bootstrap{} },
+	NewMetadata:   func(*stack.Machine) interface{} { &Metadata{} },
+}
 
-	// Plan is like Apply - it builds stack template and sends it
-	// to a Terraformer kite, but it does not modify the infrastructure.
-	//
-	// It is used when creating jMachine documents for a given stack
-	// - kloud is asked what kind of and how many machines will this stack
-	// template create, so it uses Terraformer's plan method to
-	// read the resulting output attributes after executing the template.
-	Plan(context.Context) (interface{}, error)
+type Credential struct {
+	User string
+	Pass string
+}
+
+type Bootstrap struct {
+	PersistentResourceName string
+}
+
+type Metadata struct {
+	MachineRegion string
+	MachineCNAME  string
 }
 ```
 
-When creating a new instance resources, that is meant to be connected to a Koding web terminal, the stack implementation must inject a klient binary into each such resource. Typically this is done by generating a kite.key with `*userdata.KeyCreator` helper and wrapping user's provisionning script into kloud's cloud-init, that is responsible for installing a klient binary and registering it with Kontrol service. For example see [(\*Stack).BuildResources](stack.go#L196) implementation.
-
-Any stack implementation may use helpers, which include common methods for parsing and editing Terraform template or creating and querying klient kite:
-
-	- `*stackplan.Builder`, which fetches stack resources from database, like jMachines, jCredentials or jUsers
-    - `*stackplan.Planner`, which checks connectivity to the freshly provisionned klient instances
-    - `*provider.BaseStack`, which contains common functionality for team stacks
-
-After a team stack is created, new instances are connected to Koding. Each instance is represented by `stack.Machine` interface:
+If any of the schema types implement the following interface:
 
 ```go
-// Machine represents an instance built by external cloud provider,
-// that is connected to Koding via klient interface.
-type Machine interface {
-	// Start starts the machine.
-	//
-	// If it is already started, the method is a nop.
-	Start(context.Context) error
-
-	// Stop stops the machine.
-	// If it is already stopped, the method is a nop.
-	Stop(context.Context) error
-
-	// Info describes the machine with *InfoResponse.
-	Info(context.Context) (*InfoResponse, error)
-
-	// State gives the state of the machine.
-	State() machinestate.State
-
-	// ProviderName gives the name of the provider,
-	// which is responsible for managing this machine.
-	ProviderName() string
+type Validator interface {
+	Valid() error
 }
 ```
 
-In addition to common properties, like `ipAddress` or `queryString`, each machine can contain provider-specific metadata. The metadata is usually described by a Meta struct (like `*aws.Meta` or `*vagrant.Meta`). The provider is expected to read or update the metadata from jMachine.meta field of the database model. The `*provider.BaseMachine` is a model for the shared machine document.
+the `Valid()` method is going to be called after reading the value from Koding database / safe store in order to validate it.
 
-TODO
+More details on schema can be found [here](./example.go#L71-L91), [here](./example.go#L134-L155) and [here](./example.go#L191-L216).
 
-- https://github.com/koding/koding/issues/8352 - improve custom provider API and make it possible for a stack to have multiple providers
+- `stack.go` defines a Stack struct which implements the `provider.Stack` interface
+
+The stub definition looks like:
+
+```go
+package your
+
+import (
+	"errors"
+
+	"koding/kites/kloud/stack"
+	"koding/kites/kloud/stack/provider"
+)
+
+var errNotImplemented = errors.New("not implemented")
+
+type Stack struct {
+	*provider.BaseStack
+}
+
+func (*Stack) VerifyCredential(*stack.Credential) error {
+	return errNotImplemented
+}
+
+func (*Stack) BootstrapTemplates(*stack.Credential) ([]*stack.Template, error) {
+	return nil, errNotImplemented
+}
+
+func (*Stack) ApplyTemplate(*stack.Credential) (*stack.Template, error) {
+	return nil, errNotImplemented
+}
+```
+
+More details on expected behavior of each method can be found [here](./example.go#L223-L236), [here](./example.go#L238-L247) and [here](./example.go#L249-L338).
+
+- and `machine.go`, which defines \*Machine for controlling single remote machine
+
+The stub:
+
+```go
+package your
+
+import (
+	"errors"
+
+	"koding/kites/kloud/machinestate"
+	"koding/kites/kloud/stack/provider"
+
+	"golang.org/x/net/context"
+)
+
+var errNotImplemented = errors.New("not implemented")
+
+type Machine struct {
+	*provider.BaseMachine
+}
+
+func (*Machine) Start(context.Context) (metadata interface{}, err error) {
+	return nil, errNotImplemented
+}
+
+func (*Machine) Stop(context.Context) (metadata interface{}, err error) {
+	return nil, errNotImplemented
+}
+
+func (*Machine) Info(context.Context) (state machinestate.State, metadata interface{}, err error) {
+	return 0, nil, errNotImplemented
+}
+```
+
+More details [here](./example.go#L157-L189) and [an example of AWS implementation](https://github.com/koding/koding/blob/358a070fd24700cee4a39dc556ad79164f3b9918/go/src/koding/kites/kloud/provider/aws/machine.go#L42-L68).
+
+## Final notes
+
+The `*provider.BaseMachine` and `*provider.BaseStack` API should be considered not stable, thus a subject to change. Usually it means a rename here and there or new fields that remove the boilerplate even further.
+
+Relavant issues:
+
+- https://github.com/koding/koding/issues/9127
+- https://github.com/koding/koding/issues/8903
