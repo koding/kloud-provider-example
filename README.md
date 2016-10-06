@@ -36,7 +36,7 @@ The [Koding repository](https://github.com/koding/koding) contains more examples
 
 - [AWS](https://github.com/koding/koding/tree/master/go/src/koding/kites/kloud/provider/aws)
 - [Vagrant](https://github.com/koding/koding/tree/master/go/src/koding/kites/kloud/provider/vagrant)
-- [Azure](https://github.com/koding/koding/tree/master/go/src/koding/kites/kloud/provider/azure)
+- [Digital Ocean](https://github.com/koding/koding/tree/master/go/src/koding/kites/kloud/provider/do)
 
 # Quick start
 
